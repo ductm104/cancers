@@ -3,8 +3,6 @@ import logging
 import scipy
 import sklearn
 import seaborn
-import functools
-import multiprocessing
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,8 +10,11 @@ import matplotlib.pyplot as plt
 from sklearn import linear_model
 from sklearn.linear_model import *
 from sklearn.svm import LinearSVC
-from sklearn.feature_selection import SelectFromModel
 from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+from ttest import TtestPreprocessor
+from utils import load_data
 
 
 LOGLEVEL = os.environ.get('LOGLEVEL', 'DEBUG').upper()
@@ -21,78 +22,13 @@ logging.basicConfig(level=LOGLEVEL)
 Logger = logging.getLogger(__name__)
 
 
-def ttest_scipy(arr1, arr2):
-    '''Perform ttest on dimension 1 of two arrays'''
-    tvalues, pvalues = scipy.stats.ttest_ind(arr1, arr2, axis=1, equal_var=True)
-    return tvalues, pvalues
-
-
-class Preprocessor:
-    '''Remove excessive noise using (not yet) moderated t-test'''
-    def __init__(self, ttest_fn=None,):
-        if ttest_fn is None:
-            self.ttest_fn = ttest_scipy
-
-    def __call__(self, dataX, dataY):
-        labels = np.unique(dataY)
-        masks = []
-        for label in labels:
-            other = list(set(labels)-set([label]))
-            Logger.debug(f'Perform T-Test ong {label} vs {other}')
-
-            x_label = dataX[dataY==label]
-            x_other = dataX[dataY!=label]
-            Logger.debug(f'Data size: {x_label.shape} vs {x_other.shape}')
-
-            mask = self._filter(x_label, x_other)
-            Logger.debug(f'{label}: {np.sum(mask)}')
-            masks.append(mask)
-        final_mask = self._merge(masks)
-        return final_mask
-
-    def _get_support_mask(self, pvalues, alpha=0.05):
-        '''Perform Bejamini-Hochberg procedure to select features'''
-        n_features = len(pvalues)
-        sv = np.sort(pvalues)
-        selected = sv[sv <= float(alpha) / n_features * np.arange(1, n_features + 1)]
-        if len(selected) == 0:
-            return np.zeros_like(pvalues, dtype=bool)
-        return pvalues <= selected.max()
-
-    def _filter(self, x_label, x_other):
-        x_label = x_label.transpose(1, 0)
-        x_other = x_other.transpose(1, 0)
-
-        tvalues, pvalues = self.ttest_fn(x_label, x_other)
-        mask = self._get_support_mask(pvalues)
-        return mask
-
-    def _merge(self, masks):
-        masks = np.array(masks).transpose(1, 0)
-        out = np.array([all(s) for s in masks])
-        Logger.info(f'Number of retained features: {np.sum(out)}')
-        return out
-
-
-class PNAS:
-    def __init__(self,
-            preprocessor=None,
-            lasso_model=None,
-            clf_model=None
-    ):
-        self.preprocessor = preprocessor
-        if preprocessor is None:
-            self.preprocessor = Preprocessor()
-
+class LASSO:
+    def __init__(self, lasso_model=None):
         self.lasso_model = lasso_model
         if lasso_model is None:
             self.lasso_model = LinearSVC(C=0.01, penalty="l1", dual=False)
 
-        self.clf_model = clf_model
-        if clf_model is None:
-            self.clf_model= SGDClassifier(loss='log', verbose=0)
-
-    def lasso_select_features_multiclass(self, dataX, dataY):
+    def _select_features_multiclass(self, dataX, dataY):
         '''Using Lasso to select features
         Return: mask of size [n_classes, n_features]
         '''
@@ -110,9 +46,9 @@ class PNAS:
         Logger.info('Num selected features for each class')
         for class_idx in range(mask.shape[0]):
             Logger.info(f'\tClass {class_idx}, num features: {np.sum(mask[class_idx])}')
-        return mask
+        return mask, self.lasso_model
 
-    def transform(self, X, Y, mask):
+    def _transform(self, X, Y, mask):
         '''filter out not selected features
         X.shape == [n_samples, n_features]
         Y.shape == [n_samples]
@@ -124,19 +60,10 @@ class PNAS:
             X[Y==cls_idx][:, sub_mask==0] = 0
         return X
 
-    def train_clf(self, dataX, dataY):
-        Logger.debug('Start training classification model')
-
-        self.clf_model.fit(dataX, dataY)
-        acc = self.clf_model.score(dataX, dataY)
-        Logger.info(f'Classification model training Acc: {acc}')
-
-        return self.clf_model
-
-    def pipeline(self, dataX, dataY, n_folds=10):
-        skf = StratifiedKFold(n_splits=n_folds)
-
+    def __call__(self, dataX, dataY):
+        skf = StratifiedKFold(n_splits=10)
         Logger.info(f'Start K-Fold')
+        masks = []
         for index, (train, test) in enumerate(skf.split(dataX, dataY)):
             Logger.info(f'Fold {index}')
             Xtrain, Ytrain = dataX[train], dataY[train]
@@ -145,15 +72,38 @@ class PNAS:
             Logger.debug(f'Training data size: {Xtrain.shape} {Ytrain.shape}')
             Logger.debug(f'Validation data size: {Xtest.shape} {Ytest.shape}')
 
-            mask = self.lasso_select_features_multiclass(Xtrain, Ytrain)
+            mask, clf = self._select_features_multiclass(Xtrain, Ytrain)
+            masks.append(mask)
 
-            Xstest = self.transform(Xtest, Ytest, mask)
-            Xstrain = self.transform(Xtrain, Ytrain, mask)
-
-            clf = self.train_clf(Xstrain, Ytrain)
-            acc = clf.score(Xstest, Ytest)
+            acc = clf.score(Xtest, Ytest)
             Logger.info(f'Validation Acc {acc}')
 
+        masks = np.array(masks)
+        masks = np.sum(masks, axis=0)
+        final_mask = masks >= 7
+
+        Logger.info('Num selected features for each class')
+        for class_idx in range(final_mask.shape[0]):
+            Logger.info(f'\tClass {class_idx}, num features: {np.sum(final_mask[class_idx])}')
+
+        dataX = self._transform(dataX, dataY, final_mask)
+        return dataX, dataY
+
+
+class PNAS:
+    def __init__(self,
+            clf_model=None
+    ):
+        self.preprocessor = TtestPreprocessor()
+        self.lasso_model = LASSO()
+        self.clf_model= SGDClassifier(loss='log', verbose=0, n_jobs=-1)
+
+    def train_clf(self, dataX, dataY):
+        Logger.debug('Start training classification model')
+
+        self.clf_model.fit(dataX, dataY)
+        acc = self.clf_model.score(dataX, dataY)
+        Logger.info(f'Classification model training Acc: {acc}')
         return self.clf_model
 
     def run_pipeline(self, dataX, dataY):
@@ -171,30 +121,27 @@ class PNAS:
             where 1 mean selected feature and 0 is not.
 
         '''
-        mask_1st = self.preprocessor(dataX, dataY)
-        dataX[:, mask_1st==0] = 0
+        dataX, dataY = self.preprocessor(dataX, dataY)
+        dataX, dataY = self.lasso_model(dataX, dataY)
+        clf = self.train_clf(dataX, dataY)
+        return clf
 
-        self.pipeline(dataX, dataY)
-        return []
-
-
-def load_data():
-    data_adjacent_xy = './data_adjacent_xy.npz'
-    data_xy = np.load(data_adjacent_xy)
-    dataX = data_xy['dataX']
-    dataY = data_xy['dataY']
-
-    label_list = sorted(np.unique(dataY))
-    label_map = {val:i for i, val in enumerate(label_list)}
-    print(f'Label map: {label_map}')
-
-    dataX = np.nan_to_num(dataX)
-    dataY = np.array([label_map[label] for label in dataY])
-
-    print('Data size:', dataX.shape, dataY.shape)
-    return dataX, dataY, label_map
 
 if __name__ == '__main__':
-    X, Y, label_map = load_data()
+    fpath = './new_data/data_adjacent_xy.npz'
+    X, Y, label_map = load_data(fpath)
+    #X=X[:, :1000]
+    Xtrain, Xtest, Ytrain, Ytest = sklearn.model_selection.train_test_split(X, Y,
+                test_size=0.33, random_state=42, stratify=Y)
+
     pnas = PNAS()
-    pnas.run_pipeline(X, Y)
+    final_clf = pnas.run_pipeline(Xtrain, Ytrain)
+    score = final_clf.score(Xtest, Ytest)
+    preds = final_clf.predict(Xtest)
+    Logger.info(f'Final testing score {score}')
+    print(sklearn.metrics.classification_report(Ytest, preds))
+    cm = confusion_matrix(Ytest, preds, labels=final_clf.classes_)
+    disp = ConfusionMatrixDisplay(cm, display_labels=final_clf.classes_)
+    disp.plot()
+    #plt.show()
+    plt.savefig('cm.png')

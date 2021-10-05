@@ -1,4 +1,8 @@
+import os
+import gc
+import sys
 import logging
+import psutil
 import rpy2
 import numpy as np
 import pandas as pd
@@ -8,15 +12,80 @@ from rpy2 import robjects
 from rpy2.robjects.packages import importr
 from rpy2.robjects.vectors import IntVector, FloatVector
 
+import rpy2.robjects.numpy2ri
+rpy2.robjects.numpy2ri.activate()
+
+
+logging.basicConfig(level=logging.DEBUG)
 Logger = logging.getLogger(__name__)
 
-#rpy2.robjects.numpy2ri.activate()
-rprint = robjects.globalenv.find("print")
+
+def log_mem(mess=''):
+    process = psutil.Process(os.getpid())
+    mem = process.memory_info().rss / (1024**3)
+    print(f'\t{mess}. Current memory allocated (GB)', round(mem))
+
+
+def clean_mem():
+    gc = robjects.r['gc']
+    gc()
+
+
+def install_packages():
+    import rpy2.robjects.packages as rpackages
+    from rpy2.robjects.vectors import StrVector
+
+    utils = rpackages.importr('utils')
+    utils.chooseCRANmirror(ind=1) # select the first mirror in the list
+
+    packnames = ('ggplot2', 'hexbin', 'BiocManager', 'limma', 'MKmisc')
+    names_to_install = [x for x in packnames if not rpackages.isinstalled(x)]
+    if len(names_to_install) > 0:
+        utils.install_packages(StrVector(names_to_install))
+if os.environ.get('INSTALL', False):
+    install_packages()
+
 
 R = robjects.r
 MKmisc = importr('MKmisc')
 Rbase = importr('base')
 Rstats = importr('stats')
+
+
+#----------------------------------#
+#----------moderated test----------#
+#----------------------------------#
+
+def moderated_ttest(X, Y):
+    '''Perform Moderated TTest using R backend
+    With Adjustment method is Benjamini-HochBerg
+    Params:
+        - X: matrix of shape [n_feature, n_samples]
+        - Y: vector of shape [n_samples]
+             Y must contain only 2 unique values
+             e.g. Y = [0, 1, 0, 1, 1, 0]
+             The i_th value of Y represent the label of sample X_i
+    Return:
+        - stats: matrix of statistic
+    '''
+    Rbase.set_seed(42)
+    nr, nc = X.shape[:2]
+    log_mem('init')
+    X = Rbase.matrix(X, nrow=nr, ncol=nc)
+    Y = Rbase.factor(Y)
+    log_mem('to R')
+    # print(X.shape, Y.shape)
+    stats = MKmisc.mod_t_test(X, group=Y, paired=False, adjust_method='BH')
+    log_mem('from R')
+    stats = pd.DataFrame(stats)
+    log_mem('to pandas')
+    del X
+    del Y
+    gc.collect()
+    log_mem('del')
+    clean_mem()
+    log_mem('r gc')
+    return stats
 
 
 class R_Preprocessor:
@@ -34,40 +103,58 @@ class R_Preprocessor:
             Y_clone[Y_clone != label] = label+1
 
             stats = moderated_ttest(dataX, Y_clone)
-            
-            qvalues = stats['adj.p.value']
-            mask = qvalues <= 0.05
-            
+            mask = stats['adj.p.value'] <= 0.05
+            del stats
+            gc.collect()
+
             Logger.debug(f'{label}: {np.sum(mask)}')
-            masks.append(mask)
+            #masks.append(mask)
+            with open(f'./output/mask_of_{label}_{fname}_v3.npy', 'wb') as f:
+                np.save(f, mask)
+            del mask
+            gc.collect()
+            log_mem('last')
+        return [0]
         final_mask = self._merge(masks)
         return final_mask
 
     def _merge(self, masks):
         masks = np.array(masks).transpose(1, 0)
+        with open('./all_masks_new.npy', 'wb') as f:
+            np.save(f, masks)
         out = np.array([all(s) for s in masks])
+        with open('./final_mask_new.npy', 'wb') as f:
+            np.save(f, out)
         Logger.info(f'Number of retained features: {np.sum(out)}')
         return out
-        
-data_adjacent_xy = './data_adjacent_xy.npz'
-def load_data():
-    data_xy = np.load(data_adjacent_xy)
+
+
+def load_data(data_adjacent_xy):
+    #data_adjacent_xy = './new_data/data_adjacent_xy.npz'
+    #data_adjacent_xy = './new_data/data_tcga_450_beta.npz'
+    data_xy = np.load(data_adjacent_xy, allow_pickle=True)
     dataX = data_xy['dataX']
     dataY = data_xy['dataY']
-    
+
     label_list = sorted(np.unique(dataY))
     label_map = {val:i for i, val in enumerate(label_list)}
     print(f'Label map: {label_map}')
-    
+
     dataX = np.nan_to_num(dataX)
     dataY = np.array([label_map[label] for label in dataY])
-    
+
     print('Data size:', dataX.shape, dataY.shape)
     return dataX, dataY, label_map
 
+
 if __name__ == '__main__':
-    X, Y, label_map = load_data()
-    X = X[:, :1000]
+    input_file = sys.argv[1]
+    fname = input_file.split('/')[-1].split('.')[0]
+
+    X, Y, label_map = load_data(input_file)
+    if os.environ.get('test', False):
+        X = X[:, :1000]
+
     proc = R_Preprocessor()
-    mask = proc(Xs, Ys)
+    mask = proc(X, Y)
     print(sum(mask))
