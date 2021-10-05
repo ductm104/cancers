@@ -81,6 +81,7 @@ class LASSO:
         masks = np.array(masks)
         masks = np.sum(masks, axis=0)
         final_mask = masks >= 7
+        self.final_mask = np.array(final_mask)
 
         Logger.info('Num selected features for each class')
         for class_idx in range(final_mask.shape[0]):
@@ -123,19 +124,23 @@ class PNAS:
         '''
         dataX, dataY = self.preprocessor(dataX, dataY)
         dataX, dataY = self.lasso_model(dataX, dataY)
+
+        final_mask = self.lasso_model.final_mask
         clf = self.train_clf(dataX, dataY)
-        return clf
+        return clf, final_mask
 
 
 if __name__ == '__main__':
     fpath = './new_data/data_adjacent_xy.npz'
     X, Y, label_map = load_data(fpath)
-    #X=X[:, :1000]
+    X=X[:, :1000]
     Xtrain, Xtest, Ytrain, Ytest = sklearn.model_selection.train_test_split(X, Y,
                 test_size=0.33, random_state=42, stratify=Y)
 
     pnas = PNAS()
-    final_clf = pnas.run_pipeline(Xtrain, Ytrain)
+    final_clf, final_mask = pnas.run_pipeline(Xtrain, Ytrain)
+    with open('./final_marker_to_draw.npy', 'wb') as f:
+        np.save(f, final_mask)
     score = final_clf.score(Xtest, Ytest)
     preds = final_clf.predict(Xtest)
     Logger.info(f'Final testing score {score}')
