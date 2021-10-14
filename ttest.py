@@ -20,7 +20,8 @@ def pre_compute_proc(*x, fpath='./final_mask.npy'):
 
 class TtestPreprocessor:
     '''Remove excessive noise using (not yet) moderated t-test'''
-    def __init__(self):
+    def __init__(self, exp_path):
+        self.exp_path = exp_path
         self.ttest_fn = ttest_scipy
 
     def __call__(self, dataX, dataY):

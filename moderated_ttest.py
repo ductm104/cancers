@@ -70,26 +70,22 @@ def moderated_ttest(X, Y):
     '''
     Rbase.set_seed(42)
     nr, nc = X.shape[:2]
-    log_mem('init')
     X = Rbase.matrix(X, nrow=nr, ncol=nc)
     Y = Rbase.factor(Y)
-    log_mem('to R')
     # print(X.shape, Y.shape)
     stats = MKmisc.mod_t_test(X, group=Y, paired=False, adjust_method='BH')
-    log_mem('from R')
     stats = pd.DataFrame(stats)
-    log_mem('to pandas')
     del X
     del Y
     gc.collect()
-    log_mem('del')
     clean_mem()
-    log_mem('r gc')
     return stats
 
 
 class R_Preprocessor:
     '''Remove excessive noise using moderated t-test'''
+    def __init__(self, exp_path):
+        self.exp_path = exp_path
 
     def __call__(self, dataX, dataY):
         dataX = dataX.transpose(1, 0)  # n_features * n_samples
@@ -103,27 +99,34 @@ class R_Preprocessor:
             Y_clone[Y_clone != label] = label+1
 
             stats = moderated_ttest(dataX, Y_clone)
-            mask = stats['adj.p.value'] <= 0.05
+            mask = np.zeros(len(stats['adj.p.value']), dtype=bool)
+            mask[stats['adj.p.value'] <= 0.05] = True
             del stats
             gc.collect()
 
-            Logger.debug(f'{label}: {np.sum(mask)}')
-            #masks.append(mask)
-            with open(f'./output/mask_of_{label}_{fname}_v3.npy', 'wb') as f:
+            Logger.debug(f'Label {label} num mask: {np.sum(mask)}')
+            masks.append(mask)
+            with open(f'./{self.exp_path}/mask_of_{label}_mod_ttest.npy', 'wb') as f:
                 np.save(f, mask)
             del mask
             gc.collect()
-            log_mem('last')
-        return [0]
         final_mask = self._merge(masks)
-        return final_mask
+        with open(f'{self.exp_path}/final_mask_mod_ttest.npy', 'wb') as f:
+            np.save(f, final_mask)
+
+        self.final_mask = final_mask
+        dataX = dataX.transpose(1, 0)
+        dataX[:, final_mask==0] = 0
+        return dataX, dataY
 
     def _merge(self, masks):
-        masks = np.array(masks).transpose(1, 0)
-        with open('./all_masks_new.npy', 'wb') as f:
+        masks = np.array(masks)
+        masks = masks.transpose(1, 0)
+        with open(f'{self.exp_path}/all_masks_mod_ttest.npy', 'wb') as f:
             np.save(f, masks)
         out = np.array([all(s) for s in masks])
-        with open('./final_mask_new.npy', 'wb') as f:
+        print(out.shape)
+        with open(f'{self.exp_path}/final_mask_mod_ttest.npy', 'wb') as f:
             np.save(f, out)
         Logger.info(f'Number of retained features: {np.sum(out)}')
         return out
