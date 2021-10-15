@@ -19,7 +19,7 @@ from ttest import TtestPreprocessor
 from moderated_ttest import R_Preprocessor
 
 
-LOGLEVEL = os.environ.get('LOGLEVEL', 'DEBUG').upper()
+LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
 logging.basicConfig(level=LOGLEVEL)
 Logger = logging.getLogger(__name__)
 
@@ -95,10 +95,10 @@ def get_ttest_pnas(exp_path):
 
 
 def get_mod_ttest_pnas(exp_path):
-    preprocessor = R_Preprocessor(fname)
-    lasso_model = LASSO()
+    preprocessor = R_Preprocessor(exp_path)
+    lasso_model = LASSO(exp_path)
     clf_model= SGDClassifier(loss='log', verbose=0, n_jobs=-1)
-    pnas = PNAS(preprocessor, lasso_model, clf_model)
+    pnas = PNAS(exp_path, preprocessor, lasso_model, clf_model)
     return pnas
 
 
@@ -129,6 +129,14 @@ def create_exp_path(fpath):
     exp_path = f'experiments/{fname}/{len(exps)}'
     os.system(f'mkdir -p {exp_path}')
     Logger.info(f'Save experiment to {exp_path}')
+
+    # logging to file
+    fh = logging.FileHandler(f'{exp_path}/run_logs.txt', )
+    fh.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    logging.getLogger('').addHandler(fh)
+
     return exp_path, fname
 
 
@@ -137,7 +145,7 @@ if __name__ == '__main__':
     exp_path, fname = create_exp_path(fpath)
 
     Xtrain, Xtest, Ytrain, Ytest, label_list = split_data(fpath, exp_path, debug=True)
-    pnas = get_ttest_pnas(exp_path)
+    pnas = get_mod_ttest_pnas(exp_path)
 
     pnas.run_pipeline(Xtrain, Ytrain)
     pnas.score(Xtest, Ytest, label_list)

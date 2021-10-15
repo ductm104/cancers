@@ -1,6 +1,10 @@
 import json
+import logging
 import numpy as np
 from sklearn.linear_model import *
+
+
+Logger = logging.getLogger(__name__)
 
 
 def lasso_clf():
@@ -19,7 +23,7 @@ def lasso_clf():
 
 
 def load_data(fpath):
-    print(f'Load data from {fpath}')
+    Logger.info(f'Load data from {fpath}')
     data_xy = np.load(fpath, allow_pickle=True)
     dataX = data_xy['dataX']
     dataY = data_xy['dataY']
@@ -27,13 +31,13 @@ def load_data(fpath):
     label_list = sorted(np.unique(dataY))
     label_map = {val:i for i, val in enumerate(label_list)}
     rev_label_map = {i:val for i, val in enumerate(label_list)}
-    print(f'Label list:', label_list)
-    print(f'Label map: {label_map}')
+    Logger.info(f'Label list: {label_list}')
+    Logger.info(f'Label map: {label_map}')
 
     dataX = np.nan_to_num(dataX)
     dataY = np.array([label_map[label] for label in dataY])
 
-    print('Data size:', dataX.shape, dataY.shape)
+    Logger.info('Data size: {dataX.shape}, {dataY.shape}')
     return dataX, dataY, label_list
 
 

@@ -6,7 +6,6 @@ import psutil
 import rpy2
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from rpy2 import robjects
 from rpy2.robjects.packages import importr
@@ -20,10 +19,13 @@ logging.basicConfig(level=logging.DEBUG)
 Logger = logging.getLogger(__name__)
 
 
+#----------------------------------#
+#----------R utils-----------------#
+#----------------------------------#
 def log_mem(mess=''):
     process = psutil.Process(os.getpid())
     mem = process.memory_info().rss / (1024**3)
-    print(f'\t{mess}. Current memory allocated (GB)', round(mem))
+    print(f'\t{mess}.\t\t Current memory allocated {round(mem)}(GB)')
 
 
 def clean_mem():
@@ -42,20 +44,19 @@ def install_packages():
     names_to_install = [x for x in packnames if not rpackages.isinstalled(x)]
     if len(names_to_install) > 0:
         utils.install_packages(StrVector(names_to_install))
-if os.environ.get('INSTALL', False):
+
+try:
+    R = robjects.r
+    MKmisc = importr('MKmisc')
+    Rbase = importr('base')
+    Rstats = importr('stats')
+except Exception:
     install_packages()
-
-
-R = robjects.r
-MKmisc = importr('MKmisc')
-Rbase = importr('base')
-Rstats = importr('stats')
 
 
 #----------------------------------#
 #----------moderated test----------#
 #----------------------------------#
-
 def moderated_ttest(X, Y):
     '''Perform Moderated TTest using R backend
     With Adjustment method is Benjamini-HochBerg
@@ -72,11 +73,9 @@ def moderated_ttest(X, Y):
     nr, nc = X.shape[:2]
     X = Rbase.matrix(X, nrow=nr, ncol=nc)
     Y = Rbase.factor(Y)
-    # print(X.shape, Y.shape)
     stats = MKmisc.mod_t_test(X, group=Y, paired=False, adjust_method='BH')
     stats = pd.DataFrame(stats)
-    del X
-    del Y
+    del X, Y
     gc.collect()
     clean_mem()
     return stats
@@ -84,8 +83,9 @@ def moderated_ttest(X, Y):
 
 class R_Preprocessor:
     '''Remove excessive noise using moderated t-test'''
-    def __init__(self, exp_path):
+    def __init__(self, exp_path, threshold=0.05):
         self.exp_path = exp_path
+        self.threshold = threshold
 
     def __call__(self, dataX, dataY):
         dataX = dataX.transpose(1, 0)  # n_features * n_samples
@@ -100,20 +100,15 @@ class R_Preprocessor:
 
             stats = moderated_ttest(dataX, Y_clone)
             mask = np.zeros(len(stats['adj.p.value']), dtype=bool)
-            mask[stats['adj.p.value'] <= 0.05] = True
-            del stats
-            gc.collect()
-
-            Logger.debug(f'Label {label} num mask: {np.sum(mask)}')
+            mask[stats['adj.p.value'] <= self.threshold] = True
             masks.append(mask)
-            with open(f'./{self.exp_path}/mask_of_{label}_mod_ttest.npy', 'wb') as f:
-                np.save(f, mask)
-            del mask
-            gc.collect()
-        final_mask = self._merge(masks)
-        with open(f'{self.exp_path}/final_mask_mod_ttest.npy', 'wb') as f:
-            np.save(f, final_mask)
 
+            Logger.debug(f'Label {label} num markers: {np.sum(mask)}')
+
+            del mask, stats
+            gc.collect()
+
+        final_mask = self._merge(masks)
         self.final_mask = final_mask
         dataX = dataX.transpose(1, 0)
         dataX[:, final_mask==0] = 0
@@ -122,32 +117,14 @@ class R_Preprocessor:
     def _merge(self, masks):
         masks = np.array(masks)
         masks = masks.transpose(1, 0)
-        with open(f'{self.exp_path}/all_masks_mod_ttest.npy', 'wb') as f:
+        with open(f'{self.exp_path}/moderated_ttest_all_masks.npy', 'wb') as f:
             np.save(f, masks)
-        out = np.array([all(s) for s in masks])
-        print(out.shape)
-        with open(f'{self.exp_path}/final_mask_mod_ttest.npy', 'wb') as f:
-            np.save(f, out)
-        Logger.info(f'Number of retained features: {np.sum(out)}')
-        return out
 
-
-def load_data(data_adjacent_xy):
-    #data_adjacent_xy = './new_data/data_adjacent_xy.npz'
-    #data_adjacent_xy = './new_data/data_tcga_450_beta.npz'
-    data_xy = np.load(data_adjacent_xy, allow_pickle=True)
-    dataX = data_xy['dataX']
-    dataY = data_xy['dataY']
-
-    label_list = sorted(np.unique(dataY))
-    label_map = {val:i for i, val in enumerate(label_list)}
-    print(f'Label map: {label_map}')
-
-    dataX = np.nan_to_num(dataX)
-    dataY = np.array([label_map[label] for label in dataY])
-
-    print('Data size:', dataX.shape, dataY.shape)
-    return dataX, dataY, label_map
+        final_mask = np.array([all(s) for s in masks])
+        with open(f'{self.exp_path}/moderated_ttest_merged_final_mask.npy', 'wb') as f:
+            np.save(f, final_mask)
+        Logger.info(f'Number of retained features: {np.sum(final_mask)}')
+        return final_mask
 
 
 if __name__ == '__main__':
