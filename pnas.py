@@ -19,8 +19,7 @@ from ttest import TtestPreprocessor
 from moderated_ttest import R_Preprocessor
 
 
-LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
-logging.basicConfig(level=LOGLEVEL)
+logging.basicConfig(level=logging.DEBUG)
 Logger = logging.getLogger(__name__)
 
 
@@ -43,7 +42,7 @@ class PNAS:
         Logger.info(f'Classification model training Acc: {acc}')
 
     def _save_markers(self):
-        with open(f'{self.exp_path}/final_marker_to_draw.npy', 'wb') as f:
+        with open(f'{self.exp_path}/final_marker_to_draw_nclass_nfeatures.npy', 'wb') as f:
             np.save(f, self.lasso_model.final_mask)
         Logger.info('Final markers saved')
 
@@ -123,10 +122,13 @@ def split_data(fpath, exp_path, debug=False):
     return Xtrain, Xtest, Ytrain, Ytest, label_map
 
 
-def create_exp_path(fpath):
+def create_exp_path(fpath, debug=False):
     fname = fpath.split('/')[-1].split('.')[0]
     exps = glob.glob(f'experiments/{fname}/*/')
-    exp_path = f'experiments/{fname}/{len(exps)}'
+    if debug:
+        exp_path = f'experiments/{fname}/{len(exps)}_debug'
+    else:
+        exp_path = f'experiments/{fname}/{len(exps)}'
     os.system(f'mkdir -p {exp_path}')
     Logger.info(f'Save experiment to {exp_path}')
 
@@ -142,9 +144,10 @@ def create_exp_path(fpath):
 
 if __name__ == '__main__':
     fpath = sys.argv[1]
-    exp_path, fname = create_exp_path(fpath)
+    DEBUG = os.environ.get('debug', False)
+    exp_path, fname = create_exp_path(fpath, DEBUG)
 
-    Xtrain, Xtest, Ytrain, Ytest, label_list = split_data(fpath, exp_path, debug=True)
+    Xtrain, Xtest, Ytrain, Ytest, label_list = split_data(fpath, exp_path, debug=DEBUG)
     pnas = get_mod_ttest_pnas(exp_path)
 
     pnas.run_pipeline(Xtrain, Ytrain)
