@@ -1,7 +1,11 @@
+import os
+import json
+import glob
 import json
 import logging
 import numpy as np
 from sklearn.linear_model import *
+from sklearn.model_selection import train_test_split, StratifiedKFold
 
 
 Logger = logging.getLogger(__name__)
@@ -41,34 +45,41 @@ def load_data(fpath):
     return dataX, dataY, label_list
 
 
-def get_feature_names(mask_path):
-    output = []
-    #with open('./new_data/tcga_450_features_name.csv') as f:
-        #fnames = f.readlines()[1:]
-        #print(len(fnames))
-        #fnames = [name.strip() for name in fnames]
-    with open('./new_data/features_name.json') as f:
-        fnames = json.load(f)
-    fnames = np.array(fnames)
+def split_data(fpath, exp_path, debug=False):
+    X, Y, label_map = load_data(fpath)
 
-    mask = np.load(mask_path)
-    print(mask.shape)
+    if debug:
+        # run with only 1k features
+        Logger.info('*'*40)
+        Logger.info('Running SANITY TEST, with only 1000 features')
+        Logger.info('*'*40)
+        X = X[:, :1000]
 
-    assert mask.shape[1] == len(fnames), 'Len not equal'
+    Logger.info('Dump label map')
+    with open(f'{exp_path}/labelmap.json', 'w') as f:
+        json.dump(label_map, f)
 
-    for dtype in mask:
-        selected = np.where(dtype>0)[0]
-        names = fnames[selected]
-        output.append(names)
+    Xtrain, Xtest, Ytrain, Ytest = train_test_split(X, Y, test_size=0.33, random_state=42, stratify=Y)
+    Logger.info(f'Data size: train {Xtrain.shape} test {Xtest.shape}')
 
-    print(output)
-    return output
+    return Xtrain, Xtest, Ytrain, Ytest, label_map
 
-if __name__ == '__main__':
-    #data_adjacent_xy = './new_data/data_adjacent_xy.npz'
-    #X, Y, label_map = load_data(data_adjacent_xy)
-    output = get_feature_names('./data_adjacent_xy/final_marker_to_draw.npy')
 
-    with open('./data_adjacent_xy_cp/ttest_markers.txt', 'w') as f:
-        for x in output:
-            print(x, file=f)
+def create_exp_path(fpath, debug=False):
+    fname = fpath.split('/')[-1].split('.')[0]
+    exps = glob.glob(f'experiments/{fname}/*/')
+    if debug:
+        exp_path = f'experiments/{fname}/{len(exps)}_debug'
+    else:
+        exp_path = f'experiments/{fname}/{len(exps)}'
+    os.system(f'mkdir -p {exp_path}')
+    Logger.info(f'Save experiment to {exp_path}')
+
+    # logging to file
+    fh = logging.FileHandler(f'{exp_path}/run_logs.txt', )
+    fh.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    logging.getLogger('').addHandler(fh)
+
+    return exp_path, fname

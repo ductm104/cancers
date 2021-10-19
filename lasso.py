@@ -13,6 +13,28 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 Logger = logging.getLogger(__name__)
 
 
+class IdentityProc:
+    def __call__(self, *datas):
+        return datas
+
+
+class PrecomputeLasso:
+    def __init__(self, mask_path):
+        Logger.info('Using pre-computed mask')
+        self.final_mask = np.load(mask_path)
+
+    def _transform(self, X, Y, mask):
+        n_classes = mask.shape[0]
+        for cls_idx in range(n_classes):
+            sub_mask = mask[cls_idx]
+            X[Y==cls_idx][:, sub_mask==0] = 0
+        return X
+
+    def __call__(self, dataX, dataY):
+        dataX = self._transform(dataX, dataY, self.final_mask)
+        return dataX, dataY
+
+
 class LASSO:
     def __init__(self, exp_path, lasso_model=None):
         self.lasso_model = lasso_model

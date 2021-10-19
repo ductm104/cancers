@@ -1,6 +1,6 @@
 **/__pycache__
 backup/
 experiments/
-new_data/
+data/
 hoang/
-
+**.swp

@@ -4,17 +4,17 @@ import json
 import glob
 import logging
 import sklearn
+import argparse
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.linear_model import *
 from sklearn.svm import LinearSVC
-from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-from utils import load_data
-from lasso import LASSO
+from utils import *
+from lasso import *
 from ttest import TtestPreprocessor
 from moderated_ttest import R_Preprocessor
 
@@ -101,54 +101,36 @@ def get_mod_ttest_pnas(exp_path):
     return pnas
 
 
-def split_data(fpath, exp_path, debug=False):
-    Logger.info(f'Load data from {fpath}')
-    X, Y, label_map = load_data(fpath)
-
-    if debug:
-        # run with only 1k features
-        Logger.info('*'*40)
-        Logger.info('Running SANITY TEST, with only 1000 features')
-        Logger.info('*'*40)
-        X = X[:, :1000]
-
-    Logger.info('Dump label map')
-    with open(f'{exp_path}/labelmap.json', 'w') as f:
-        json.dump(label_map, f)
-
-    Xtrain, Xtest, Ytrain, Ytest = train_test_split(X, Y, test_size=0.33, random_state=42, stratify=Y)
-    Logger.info(f'Data size: train {Xtrain.shape} test {Xtest.shape}')
-
-    return Xtrain, Xtest, Ytrain, Ytest, label_map
+def get_preproc_pnas(exp_path, mask_path):
+    preprocessor = IdentityProc()
+    lasso_model = PrecomputeLasso(mask_path)
+    clf_model= SGDClassifier(loss='log', verbose=0, n_jobs=-1)
+    pnas = PNAS(exp_path, preprocessor, lasso_model, clf_model)
+    return pnas
 
 
-def create_exp_path(fpath, debug=False):
-    fname = fpath.split('/')[-1].split('.')[0]
-    exps = glob.glob(f'experiments/{fname}/*/')
-    if debug:
-        exp_path = f'experiments/{fname}/{len(exps)}_debug'
-    else:
-        exp_path = f'experiments/{fname}/{len(exps)}'
-    os.system(f'mkdir -p {exp_path}')
-    Logger.info(f'Save experiment to {exp_path}')
-
-    # logging to file
-    fh = logging.FileHandler(f'{exp_path}/run_logs.txt', )
-    fh.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
-    fh.setFormatter(formatter)
-    logging.getLogger('').addHandler(fh)
-
-    return exp_path, fname
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data', type=str, help='Path to tcga data')
+    parser.add_argument('--debug', action='store_true', help='Running in debug mode')
+    parser.add_argument('--use_ttest', action='store_true', help='Using ttest/mod_ttest')
+    args = parser.parse_args()
+    return args
 
 
 if __name__ == '__main__':
-    fpath = sys.argv[1]
-    DEBUG = os.environ.get('debug', False)
-    exp_path, fname = create_exp_path(fpath, DEBUG)
+    args = parse_args()
+    fpath = args.data
+    exp_path, fname = create_exp_path(fpath, args.debug)
 
-    Xtrain, Xtest, Ytrain, Ytest, label_list = split_data(fpath, exp_path, debug=DEBUG)
-    pnas = get_mod_ttest_pnas(exp_path)
+    Xtrain, Xtest, Ytrain, Ytest, label_list = split_data(fpath, exp_path, debug=args.debug)
+
+    if args.use_ttest:
+        pnas = get_ttest_pnas(exp_path)
+    else:
+        pnas = get_mod_ttest_pnas(exp_path)
+
+    pnas = get_preproc_pnas(exp_path, './experiments/data_adjacent_xy/46/final_marker_to_draw_nclass_nfeatures.npy')
 
     pnas.run_pipeline(Xtrain, Ytrain)
     pnas.score(Xtest, Ytest, label_list)
